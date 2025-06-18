@@ -377,6 +377,734 @@ async def help_command(interaction: discord.Interaction):
     embed.set_footer(text=f"Page 1 of {len(view.pages)} • Use buttons or dropdown to navigate")
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
+# --------- Enhanced Tier List System -----------
+
+class TierListView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.current_tier = "s"
+
+    @discord.ui.select(
+        placeholder="Select tier to view/edit...",
+        options=[
+            discord.SelectOption(label="S Tier", value="s", emoji="🥇"),
+            discord.SelectOption(label="A Tier", value="a", emoji="🥈"),
+            discord.SelectOption(label="B Tier", value="b", emoji="🥉"),
+            discord.SelectOption(label="C Tier", value="c", emoji="📘"),
+            discord.SelectOption(label="D Tier", value="d", emoji="📗"),
+        ]
+    )
+    async def tier_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.current_tier = select.values[0]
+        await self.update_display(interaction)
+
+    @discord.ui.button(label="Add Item", style=discord.ButtonStyle.green)
+    async def add_item(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = TierListItemModal(self, "add")
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Remove Item", style=discord.ButtonStyle.red)
+    async def remove_item(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = TierListItemModal(self, "remove")
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Post Tier List", style=discord.ButtonStyle.primary)
+    async def post_tierlist(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_tierlist_post(interaction)
+
+    async def update_display(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title=f"Tier List Management - {self.current_tier.upper()} Tier",
+            color=get_color_for_tier(self.current_tier)
+        )
+
+        items = tier_data.get(self.current_tier, [])
+        if items:
+            embed.description = "\n".join([f"• {item}" for item in items])
+        else:
+            embed.description = "No items in this tier"
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def create_tierlist_post(self, interaction):
+        channel = bot.get_channel(BOT_CONFIG["tier_channel_id"])
+        if not channel:
+            await interaction.response.send_message("Tier channel not configured!", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="🏆 Server Tier List",
+            color=BOT_CONFIG["default_embed_color"]
+        )
+
+        for tier in ["s", "a", "b", "c", "d"]:
+            items = tier_data.get(tier, [])
+            if items:
+                embed.add_field(
+                    name=f"{tier.upper()} Tier",
+                    value="\n".join([f"• {item}" for item in items]),
+                    inline=False
+                )
+
+        await channel.send(embed=embed)
+        await interaction.response.send_message("✅ Tier list posted!", ephemeral=True)
+
+class TierListItemModal(discord.ui.Modal):
+    def __init__(self, view, action):
+        super().__init__(title=f"{action.title()} Item")
+        self.view = view
+        self.action = action
+
+        self.item_name = discord.ui.TextInput(
+            label="Item Name",
+            placeholder="Enter the item name",
+            required=True,
+            max_length=100
+        )
+        self.add_item(self.item_name)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        tier = self.view.current_tier
+        item = self.item_name.value.strip()
+
+        if tier not in tier_data:
+            tier_data[tier] = []
+
+        if self.action == "add":
+            if item not in tier_data[tier]:
+                tier_data[tier].append(item)
+                save_json("tierlist.json", tier_data)
+                await interaction.response.send_message(f"✅ Added '{item}' to {tier.upper()} tier", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"'{item}' is already in {tier.upper()} tier", ephemeral=True)
+        else:  # remove
+            if item in tier_data[tier]:
+                tier_data[tier].remove(item)
+                save_json("tierlist.json", tier_data)
+                await interaction.response.send_message(f"✅ Removed '{item}' from {tier.upper()} tier", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"'{item}' not found in {tier.upper()} tier", ephemeral=True)
+
+@tree.command(name="tierlist", description="Interactive tier list management", guild=discord.Object(id=GUILD_ID))
+@guild_only()
+async def tierlist(interaction: discord.Interaction):
+    if not has_staff_role(interaction):
+        await interaction.response.send_message("You don't have permission to manage the tier list.", ephemeral=True)
+        return
+
+    view = TierListView()
+    embed = discord.Embed(
+        title="Tier List Management - S Tier",
+        color=get_color_for_tier("s")
+    )
+
+    items = tier_data.get("s", [])
+    if items:
+        embed.description = "\n".join([f"• {item}" for item in items])
+    else:
+        embed.description = "No items in this tier"
+
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+@tree.command(name="tierlist_move", description="Move an item between tiers", guild=discord.Object(id=GUILD_ID))
+@guild_only()
+@app_commands.describe(
+    item="Item to move",
+    from_tier="Current tier",
+    to_tier="Target tier"
+)
+@app_commands.choices(
+    from_tier=[
+        app_commands.Choice(name="S", value="s"),
+        app_commands.Choice(name="A", value="a"),
+        app_commands.Choice(name="B", value="b"),
+        app_commands.Choice(name="C", value="c"),
+        app_commands.Choice(name="D", value="d"),
+    ],
+    to_tier=[
+        app_commands.Choice(name="S", value="s"),
+        app_commands.Choice(name="A", value="a"),
+        app_commands.Choice(name="B", value="b"),
+        app_commands.Choice(name="C", value="c"),
+        app_commands.Choice(name="D", value="d"),
+    ]
+)
+async def tierlist_move(interaction: discord.Interaction, item: str, from_tier: app_commands.Choice[str], to_tier: app_commands.Choice[str]):
+    if not has_staff_role(interaction):
+        await interaction.response.send_message("You don't have permission to manage the tier list.", ephemeral=True)
+        return
+
+    from_t = from_tier.value
+    to_t = to_tier.value
+
+    if from_t not in tier_data:
+        tier_data[from_t] = []
+    if to_t not in tier_data:
+        tier_data[to_t] = []
+
+    if item in tier_data[from_t]:
+        tier_data[from_t].remove(item)
+        tier_data[to_t].append(item)
+        save_json("tierlist.json", tier_data)
+        await interaction.response.send_message(f"✅ Moved '{item}' from {from_t.upper()} to {to_t.upper()} tier")
+    else:
+        await interaction.response.send_message(f"'{item}' not found in {from_t.upper()} tier", ephemeral=True)
+
+# --------- Enhanced Shop System -----------
+
+class ShopManagementView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.current_shop = None
+
+    @discord.ui.select(placeholder="Select a shop to manage...")
+    async def shop_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.current_shop = select.values[0]
+        await self.update_shop_display(interaction)
+
+    @discord.ui.button(label="Create Shop", style=discord.ButtonStyle.green)
+    async def create_shop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = CreateShopModal(self)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Add Item", style=discord.ButtonStyle.primary)
+    async def add_item(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.current_shop:
+            await interaction.response.send_message("Please select a shop first.", ephemeral=True)
+            return
+        modal = ShopItemModal(self, "add")
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Remove Item", style=discord.ButtonStyle.red)
+    async def remove_item(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.current_shop:
+            await interaction.response.send_message("Please select a shop first.", ephemeral=True)
+            return
+        modal = ShopItemModal(self, "remove")
+        await interaction.response.send_modal(modal)
+
+    async def update_shop_list(self):
+        options = []
+        for shop_name in shops_data.keys():
+            options.append(discord.SelectOption(label=shop_name, value=shop_name))
+        
+        if not options:
+            options.append(discord.SelectOption(label="No shops available", value="none"))
+        
+        self.children[0].options = options[:25]  # Discord limit
+
+    async def update_shop_display(self, interaction):
+        if self.current_shop not in shops_data:
+            await interaction.response.send_message("Shop not found.", ephemeral=True)
+            return
+
+        shop = shops_data[self.current_shop]
+        embed = discord.Embed(
+            title=f"Managing Shop: {self.current_shop}",
+            description=shop.get("description", "No description"),
+            color=BOT_CONFIG["default_embed_color"]
+        )
+
+        items = shop.get("items", {})
+        if items:
+            item_list = []
+            for item_name, item_data in items.items():
+                price = item_data.get("price", 0)
+                currency = get_currency_symbol()
+                item_list.append(f"**{item_name}**: {currency}{price}")
+            embed.add_field(name="Items", value="\n".join(item_list), inline=False)
+        else:
+            embed.add_field(name="Items", value="No items in this shop", inline=False)
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+class CreateShopModal(discord.ui.Modal):
+    def __init__(self, view):
+        super().__init__(title="Create New Shop")
+        self.view = view
+
+        self.name = discord.ui.TextInput(
+            label="Shop Name",
+            placeholder="Enter shop name",
+            required=True,
+            max_length=50
+        )
+
+        self.description = discord.ui.TextInput(
+            label="Shop Description",
+            placeholder="Enter shop description",
+            required=False,
+            max_length=200,
+            style=discord.TextStyle.paragraph
+        )
+
+        self.add_item(self.name)
+        self.add_item(self.description)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        shop_name = self.name.value.strip()
+        
+        if shop_name in shops_data:
+            await interaction.response.send_message("A shop with this name already exists.", ephemeral=True)
+            return
+
+        shops_data[shop_name] = {
+            "description": self.description.value.strip(),
+            "items": {},
+            "created_by": interaction.user.id
+        }
+        save_json("shops.json", shops_data)
+
+        await self.view.update_shop_list()
+        await interaction.response.send_message(f"✅ Created shop '{shop_name}'", ephemeral=True)
+
+class ShopItemModal(discord.ui.Modal):
+    def __init__(self, view, action):
+        super().__init__(title=f"{action.title()} Item")
+        self.view = view
+        self.action = action
+
+        self.item_name = discord.ui.TextInput(
+            label="Item Name",
+            placeholder="Enter item name",
+            required=True,
+            max_length=50
+        )
+
+        if action == "add":
+            self.price = discord.ui.TextInput(
+                label="Price",
+                placeholder="Enter item price",
+                required=True,
+                max_length=10
+            )
+            self.description = discord.ui.TextInput(
+                label="Description",
+                placeholder="Enter item description",
+                required=False,
+                max_length=200,
+                style=discord.TextStyle.paragraph
+            )
+            self.add_item(self.price)
+            self.add_item(self.description)
+
+        self.add_item(self.item_name)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        shop = shops_data[self.view.current_shop]
+        item_name = self.item_name.value.strip()
+
+        if self.action == "add":
+            try:
+                price = int(self.price.value)
+                if price < 0:
+                    await interaction.response.send_message("Price must be positive.", ephemeral=True)
+                    return
+            except ValueError:
+                await interaction.response.send_message("Invalid price. Please enter a number.", ephemeral=True)
+                return
+
+            shop["items"][item_name] = {
+                "price": price,
+                "description": self.description.value.strip()
+            }
+            save_json("shops.json", shops_data)
+            await interaction.response.send_message(f"✅ Added '{item_name}' to shop", ephemeral=True)
+
+        else:  # remove
+            if item_name in shop["items"]:
+                del shop["items"][item_name]
+                save_json("shops.json", shops_data)
+                await interaction.response.send_message(f"✅ Removed '{item_name}' from shop", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"'{item_name}' not found in shop", ephemeral=True)
+
+@tree.command(name="shop", description="Interactive shop management", guild=discord.Object(id=GUILD_ID))
+@guild_only()
+@app_commands.describe(action="Shop action to perform")
+@app_commands.choices(action=[
+    app_commands.Choice(name="Manage Shops", value="manage"),
+    app_commands.Choice(name="List Items", value="list"),
+    app_commands.Choice(name="Buy Item", value="buy"),
+])
+async def shop(interaction: discord.Interaction, action: app_commands.Choice[str]):
+    if action.value == "manage":
+        if not has_staff_role(interaction):
+            await interaction.response.send_message("You don't have permission to manage shops.", ephemeral=True)
+            return
+
+        view = ShopManagementView()
+        await view.update_shop_list()
+        
+        embed = discord.Embed(
+            title="Shop Management",
+            description="Select a shop to manage or create a new one:",
+            color=BOT_CONFIG["default_embed_color"]
+        )
+        
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    elif action.value == "list":
+        view = ShopListView()
+        await view.update_shop_list()
+        
+        embed = discord.Embed(
+            title="Available Shops",
+            description="Select a shop to browse:",
+            color=BOT_CONFIG["default_embed_color"]
+        )
+        
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    elif action.value == "buy":
+        view = ShopBuyView()
+        await view.update_shop_list()
+        
+        embed = discord.Embed(
+            title="Purchase Items",
+            description="Select a shop to buy from:",
+            color=BOT_CONFIG["default_embed_color"]
+        )
+        
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+class ShopListView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.select(placeholder="Select a shop to browse...")
+    async def shop_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        shop_name = select.values[0]
+        if shop_name == "none":
+            return
+
+        shop = shops_data[shop_name]
+        embed = discord.Embed(
+            title=f"🏪 {shop_name}",
+            description=shop.get("description", "No description"),
+            color=BOT_CONFIG["default_embed_color"]
+        )
+
+        items = shop.get("items", {})
+        if items:
+            item_list = []
+            for item_name, item_data in items.items():
+                price = item_data.get("price", 0)
+                currency = get_currency_symbol()
+                desc = item_data.get("description", "")
+                item_list.append(f"**{item_name}**: {currency}{price}\n{desc}")
+            embed.add_field(name="Available Items", value="\n\n".join(item_list), inline=False)
+        else:
+            embed.add_field(name="Items", value="No items available", inline=False)
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def update_shop_list(self):
+        options = []
+        for shop_name in shops_data.keys():
+            options.append(discord.SelectOption(label=shop_name, value=shop_name))
+        
+        if not options:
+            options.append(discord.SelectOption(label="No shops available", value="none"))
+        
+        self.children[0].options = options[:25]
+
+class ShopBuyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.current_shop = None
+
+    @discord.ui.select(placeholder="Select a shop...")
+    async def shop_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.current_shop = select.values[0]
+        if self.current_shop == "none":
+            return
+        await self.update_items_display(interaction)
+
+    @discord.ui.select(placeholder="Select an item to buy...", row=1)
+    async def item_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if not self.current_shop:
+            await interaction.response.send_message("Please select a shop first.", ephemeral=True)
+            return
+
+        item_name = select.values[0]
+        await self.buy_item(interaction, item_name)
+
+    async def update_shop_list(self):
+        options = []
+        for shop_name in shops_data.keys():
+            options.append(discord.SelectOption(label=shop_name, value=shop_name))
+        
+        if not options:
+            options.append(discord.SelectOption(label="No shops available", value="none"))
+        
+        self.children[0].options = options[:25]
+
+    async def update_items_display(self, interaction):
+        shop = shops_data[self.current_shop]
+        items = shop.get("items", {})
+        
+        options = []
+        for item_name, item_data in items.items():
+            price = item_data.get("price", 0)
+            currency = get_currency_symbol()
+            options.append(discord.SelectOption(
+                label=item_name,
+                value=item_name,
+                description=f"{currency}{price}"
+            ))
+        
+        if not options:
+            options.append(discord.SelectOption(label="No items available", value="none"))
+        
+        self.children[1].options = options[:25]
+        self.children[1].placeholder = f"Select an item from {self.current_shop}..."
+        
+        embed = discord.Embed(
+            title=f"🛒 Shopping at {self.current_shop}",
+            description="Select an item to purchase:",
+            color=BOT_CONFIG["default_embed_color"]
+        )
+        
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def buy_item(self, interaction, item_name):
+        if item_name == "none":
+            return
+
+        user_id = str(interaction.user.id)
+        ensure_user_in_stats(user_id)
+
+        shop = shops_data[self.current_shop]
+        item = shop["items"][item_name]
+        price = item["price"]
+        currency = get_currency_symbol()
+
+        if user_balances.get(user_id, 0) < price:
+            await interaction.response.send_message(f"You don't have enough currency! You need {currency}{price} but only have {currency}{user_balances.get(user_id, 0)}.", ephemeral=True)
+            return
+
+        # Process purchase
+        user_balances[user_id] -= price
+        
+        if item_name not in user_inventories[user_id]:
+            user_inventories[user_id][item_name] = 0
+        user_inventories[user_id][item_name] += 1
+
+        save_json("balances.json", user_balances)
+        save_json("inventories.json", user_inventories)
+
+        embed = discord.Embed(
+            title="✅ Purchase Successful!",
+            description=f"You bought **{item_name}** for {currency}{price}",
+            color=0x00FF00
+        )
+        embed.add_field(name="New Balance", value=f"{currency}{user_balances[user_id]}", inline=True)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# --------- Enhanced Reaction Role System -----------
+
+class ReactionRoleSetupView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=600)
+        self.reaction_data = {
+            "roles": {},
+            "rewards": {},
+            "message": ""
+        }
+
+    @discord.ui.button(label="Set Message", style=discord.ButtonStyle.primary)
+    async def set_message(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = ReactionRoleMessageModal(self)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Add Role Reaction", style=discord.ButtonStyle.green)
+    async def add_role(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = ReactionRoleAddModal(self)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Add Reward", style=discord.ButtonStyle.secondary)
+    async def add_reward(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = ReactionRoleRewardModal(self)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Create Reaction Role", style=discord.ButtonStyle.green)
+    async def create_reaction_role(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.reaction_data["message"] or not self.reaction_data["roles"]:
+            await interaction.response.send_message("Please set a message and add at least one role reaction.", ephemeral=True)
+            return
+
+        await self.create_reaction_message(interaction)
+
+    async def update_display(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="Reaction Role Setup",
+            color=BOT_CONFIG["default_embed_color"]
+        )
+
+        if self.reaction_data["message"]:
+            embed.add_field(name="Message", value=self.reaction_data["message"][:100] + "..." if len(self.reaction_data["message"]) > 100 else self.reaction_data["message"], inline=False)
+
+        if self.reaction_data["roles"]:
+            role_list = []
+            for emoji, role_id in self.reaction_data["roles"].items():
+                role = interaction.guild.get_role(role_id)
+                role_name = role.name if role else "Unknown Role"
+                role_list.append(f"{emoji} → {role_name}")
+            embed.add_field(name="Role Reactions", value="\n".join(role_list), inline=False)
+
+        if self.reaction_data["rewards"]:
+            reward_list = []
+            for emoji, reward in self.reaction_data["rewards"].items():
+                reward_list.append(f"{emoji} → +{reward['xp']} XP, {get_currency_symbol()}{reward['currency']}")
+            embed.add_field(name="Rewards", value="\n".join(reward_list), inline=False)
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def create_reaction_message(self, interaction):
+        embed = discord.Embed(
+            title="Role Selection",
+            description=self.reaction_data["message"],
+            color=BOT_CONFIG["default_embed_color"]
+        )
+
+        message = await interaction.channel.send(embed=embed)
+
+        # Add reactions
+        for emoji in self.reaction_data["roles"].keys():
+            try:
+                await message.add_reaction(emoji)
+            except:
+                pass
+
+        # Save reaction role data
+        message_id = str(message.id)
+        reaction_roles[message_id] = {
+            "channel_id": interaction.channel.id,
+            "roles": self.reaction_data["roles"],
+            "rewards": self.reaction_data["rewards"]
+        }
+        save_json("reaction_roles.json", reaction_roles)
+
+        await interaction.response.send_message("✅ Reaction role message created!", ephemeral=True)
+
+class ReactionRoleMessageModal(discord.ui.Modal):
+    def __init__(self, view):
+        super().__init__(title="Set Reaction Role Message")
+        self.view = view
+
+        self.message = discord.ui.TextInput(
+            label="Message Content",
+            placeholder="Enter the message for users to see",
+            required=True,
+            max_length=1000,
+            style=discord.TextStyle.paragraph
+        )
+        self.add_item(self.message)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        self.view.reaction_data["message"] = self.message.value
+        await self.view.update_display(interaction)
+
+class ReactionRoleAddModal(discord.ui.Modal):
+    def __init__(self, view):
+        super().__init__(title="Add Role Reaction")
+        self.view = view
+
+        self.emoji = discord.ui.TextInput(
+            label="Emoji",
+            placeholder="Enter emoji (e.g., 😀 or :custom_emoji:)",
+            required=True,
+            max_length=50
+        )
+
+        self.role_id = discord.ui.TextInput(
+            label="Role ID",
+            placeholder="Enter the role ID",
+            required=True,
+            max_length=20
+        )
+
+        self.add_item(self.emoji)
+        self.add_item(self.role_id)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            role_id = int(self.role_id.value)
+            role = interaction.guild.get_role(role_id)
+            
+            if not role:
+                await interaction.response.send_message("Role not found.", ephemeral=True)
+                return
+
+            self.view.reaction_data["roles"][self.emoji.value] = role_id
+            await interaction.response.send_message(f"✅ Added {self.emoji.value} → {role.name}", ephemeral=True)
+
+        except ValueError:
+            await interaction.response.send_message("Invalid role ID.", ephemeral=True)
+
+class ReactionRoleRewardModal(discord.ui.Modal):
+    def __init__(self, view):
+        super().__init__(title="Add Reaction Reward")
+        self.view = view
+
+        self.emoji = discord.ui.TextInput(
+            label="Emoji",
+            placeholder="Enter emoji for reward",
+            required=True,
+            max_length=50
+        )
+
+        self.xp_reward = discord.ui.TextInput(
+            label="XP Reward",
+            placeholder="XP to give when reacted",
+            required=True,
+            max_length=5
+        )
+
+        self.currency_reward = discord.ui.TextInput(
+            label="Currency Reward",
+            placeholder="Currency to give when reacted",
+            required=True,
+            max_length=5
+        )
+
+        self.add_item(self.emoji)
+        self.add_item(self.xp_reward)
+        self.add_item(self.currency_reward)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            xp = int(self.xp_reward.value)
+            currency = int(self.currency_reward.value)
+
+            self.view.reaction_data["rewards"][self.emoji.value] = {
+                "xp": xp,
+                "currency": currency
+            }
+
+            await interaction.response.send_message(f"✅ Added reward for {self.emoji.value}", ephemeral=True)
+
+        except ValueError:
+            await interaction.response.send_message("Invalid XP or currency amount.", ephemeral=True)
+
+@tree.command(name="reaction_role", description="Set up reaction role systems", guild=discord.Object(id=GUILD_ID))
+@guild_only()
+async def reaction_role(interaction: discord.Interaction):
+    if not has_staff_role(interaction):
+        await interaction.response.send_message("You don't have permission to create reaction roles.", ephemeral=True)
+        return
+
+    view = ReactionRoleSetupView()
+    embed = discord.Embed(
+        title="Reaction Role Setup",
+        description="Configure your reaction role system:",
+        color=BOT_CONFIG["default_embed_color"]
+    )
+
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
 # --------- Enhanced Auction System with Image Upload -----------
 
 class AuctionSetupView(discord.ui.View):
@@ -793,19 +1521,6 @@ class AuctionExtraInfoModal(discord.ui.Modal):
             self.view.auction_data["end_timestamp"] = self.end_timestamp.value
 
         await interaction.response.send_message("Advanced settings updated!", ephemeral=True)
-
-@tree.command(name="sync", description="Manually sync slash commands", guild=discord.Object(id=GUILD_ID))
-@guild_only()
-async def sync_commands(interaction: discord.Interaction):
-    if not has_admin_permissions(interaction):
-        await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
-        return
-
-    try:
-        synced = await tree.sync(guild=discord.Object(id=GUILD_ID))
-        await interaction.response.send_message(f"✅ Synced {len(synced)} command(s) to this server.", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Failed to sync: {e}", ephemeral=True)
 
 @tree.command(name="auction", description="Create auctions with interactive setup", guild=discord.Object(id=GUILD_ID))
 @guild_only()
@@ -1298,6 +2013,415 @@ async def giveaway(interaction: discord.Interaction):
     )
 
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+# --------- Profile Management System -----------
+
+class ProfileCreateView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.select(placeholder="Select a profile preset...")
+    async def preset_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        preset_name = select.values[0]
+        if preset_name == "none":
+            await interaction.response.send_message("No presets available.", ephemeral=True)
+            return
+
+        preset = profile_presets.get(preset_name)
+        if not preset:
+            await interaction.response.send_message("Preset not found.", ephemeral=True)
+            return
+
+        modal = ProfileCreateModal(preset)
+        await interaction.response.send_modal(modal)
+
+    async def update_preset_list(self):
+        options = []
+        for preset_name in profile_presets.keys():
+            options.append(discord.SelectOption(label=preset_name, value=preset_name))
+        
+        if not options:
+            options.append(discord.SelectOption(label="No presets available", value="none"))
+        
+        self.children[0].options = options[:25]
+
+class ProfileCreateModal(discord.ui.Modal):
+    def __init__(self, preset):
+        super().__init__(title=f"Create Profile - {preset['name']}")
+        self.preset = preset
+
+        for field in preset["fields"][:5]:  # Discord modal limit
+            text_input = discord.ui.TextInput(
+                label=field["label"],
+                placeholder=field.get("placeholder", ""),
+                required=field.get("required", False),
+                max_length=field.get("max_length", 100),
+                style=discord.TextStyle.paragraph if field.get("multiline") else discord.TextStyle.short
+            )
+            self.add_item(text_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        user_id = str(interaction.user.id)
+        profile_data = {
+            "preset": self.preset["name"],
+            "fields": {},
+            "created_at": int(time.time())
+        }
+
+        for i, field in enumerate(self.preset["fields"][:5]):
+            if i < len(self.children):
+                profile_data["fields"][field["label"]] = self.children[i].value
+
+        user_profiles[user_id] = profile_data
+        save_json("user_profiles.json", user_profiles)
+
+        embed = discord.Embed(
+            title="✅ Profile Created!",
+            description=f"Your profile has been created using the '{self.preset['name']}' preset.",
+            color=0x00FF00
+        )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@tree.command(name="profile", description="Profile management commands", guild=discord.Object(id=GUILD_ID))
+@guild_only()
+@app_commands.describe(action="Profile action to perform")
+@app_commands.choices(action=[
+    app_commands.Choice(name="Create Profile", value="create"),
+    app_commands.Choice(name="View Profile", value="view"),
+    app_commands.Choice(name="Edit Profile", value="edit"),
+    app_commands.Choice(name="List Presets", value="presets"),
+    app_commands.Choice(name="Create Preset (Staff)", value="create_preset"),
+])
+async def profile_command(interaction: discord.Interaction, action: app_commands.Choice[str], user: discord.Member = None):
+    if action.value == "create":
+        view = ProfileCreateView()
+        await view.update_preset_list()
+        
+        embed = discord.Embed(
+            title="Create Your Profile",
+            description="Select a preset to get started:",
+            color=BOT_CONFIG["default_embed_color"]
+        )
+        
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    elif action.value == "view":
+        target_user = user or interaction.user
+        user_id = str(target_user.id)
+        
+        if user_id not in user_profiles:
+            await interaction.response.send_message(f"{target_user.display_name} doesn't have a profile yet.", ephemeral=True)
+            return
+
+        profile = user_profiles[user_id]
+        embed = discord.Embed(
+            title=f"{target_user.display_name}'s Profile",
+            color=BOT_CONFIG["default_embed_color"]
+        )
+        embed.set_thumbnail(url=target_user.avatar.url if target_user.avatar else target_user.default_avatar.url)
+
+        for field_name, field_value in profile["fields"].items():
+            if field_value:
+                embed.add_field(name=field_name, value=field_value, inline=True)
+
+        embed.set_footer(text=f"Profile preset: {profile.get('preset', 'Unknown')}")
+        
+        await interaction.response.send_message(embed=embed)
+
+    elif action.value == "presets":
+        embed = discord.Embed(
+            title="Available Profile Presets",
+            color=BOT_CONFIG["default_embed_color"]
+        )
+
+        if not profile_presets:
+            embed.description = "No presets available."
+        else:
+            for preset_name, preset in profile_presets.items():
+                fields = ", ".join([field["label"] for field in preset["fields"]])
+                embed.add_field(name=preset_name, value=f"Fields: {fields}", inline=False)
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    elif action.value == "create_preset":
+        if not has_staff_role(interaction):
+            await interaction.response.send_message("You don't have permission to create presets.", ephemeral=True)
+            return
+
+        modal = CreatePresetModal()
+        await interaction.response.send_modal(modal)
+
+    elif action.value == "edit":
+        user_id = str(interaction.user.id)
+        if user_id not in user_profiles:
+            await interaction.response.send_message("You don't have a profile yet. Use `/profile create` first.", ephemeral=True)
+            return
+
+        profile = user_profiles[user_id]
+        preset = profile_presets.get(profile["preset"])
+        if not preset:
+            await interaction.response.send_message("Your profile preset is no longer available.", ephemeral=True)
+            return
+
+        modal = ProfileEditModal(profile, preset)
+        await interaction.response.send_modal(modal)
+
+class CreatePresetModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Create Profile Preset")
+
+        self.name = discord.ui.TextInput(
+            label="Preset Name",
+            placeholder="Enter preset name",
+            required=True,
+            max_length=50
+        )
+
+        self.description = discord.ui.TextInput(
+            label="Description",
+            placeholder="Enter preset description",
+            required=False,
+            max_length=200,
+            style=discord.TextStyle.paragraph
+        )
+
+        self.fields = discord.ui.TextInput(
+            label="Fields (JSON format)",
+            placeholder='[{"label": "Name", "required": true, "max_length": 50}]',
+            required=True,
+            max_length=2000,
+            style=discord.TextStyle.paragraph
+        )
+
+        self.add_item(self.name)
+        self.add_item(self.description)
+        self.add_item(self.fields)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            fields = json.loads(self.fields.value)
+            
+            preset_name = self.name.value.strip()
+            profile_presets[preset_name] = {
+                "name": preset_name,
+                "description": self.description.value.strip(),
+                "fields": fields,
+                "created_by": interaction.user.id
+            }
+            save_json("profile_presets.json", profile_presets)
+
+            await interaction.response.send_message(f"✅ Created preset '{preset_name}'", ephemeral=True)
+
+        except json.JSONDecodeError:
+            await interaction.response.send_message("Invalid JSON format for fields.", ephemeral=True)
+
+class ProfileEditModal(discord.ui.Modal):
+    def __init__(self, profile, preset):
+        super().__init__(title="Edit Profile")
+        self.profile = profile
+        self.preset = preset
+
+        for field in preset["fields"][:5]:
+            current_value = profile["fields"].get(field["label"], "")
+            text_input = discord.ui.TextInput(
+                label=field["label"],
+                placeholder=field.get("placeholder", ""),
+                default=current_value,
+                required=field.get("required", False),
+                max_length=field.get("max_length", 100),
+                style=discord.TextStyle.paragraph if field.get("multiline") else discord.TextStyle.short
+            )
+            self.add_item(text_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        user_id = str(interaction.user.id)
+        
+        for i, field in enumerate(self.preset["fields"][:5]):
+            if i < len(self.children):
+                self.profile["fields"][field["label"]] = self.children[i].value
+
+        user_profiles[user_id] = self.profile
+        save_json("user_profiles.json", user_profiles)
+
+        embed = discord.Embed(
+            title="✅ Profile Updated!",
+            description="Your profile has been successfully updated.",
+            color=0x00FF00
+        )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# --------- Verification System -----------
+
+class VerificationSetupView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="📝 Set Verification Word", style=discord.ButtonStyle.primary)
+    async def set_word(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = VerificationWordModal()
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="🎭 Set Verification Role", style=discord.ButtonStyle.secondary)
+    async def set_role(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = VerificationRoleModal()
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="🗑️ Toggle Delete Messages", style=discord.ButtonStyle.secondary)
+    async def toggle_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        current_setting = verification_data.get("delete_messages", False)
+        verification_data["delete_messages"] = not current_setting
+        save_json("verification.json", verification_data)
+        
+        status = "enabled" if verification_data["delete_messages"] else "disabled"
+        await interaction.response.send_message(f"✅ Message deletion is now **{status}**", ephemeral=True)
+
+    @discord.ui.button(label="📋 View Settings", style=discord.ButtonStyle.secondary)
+    async def view_settings(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.update_display(interaction)
+
+    @discord.ui.button(label="✅ Enable Verification", style=discord.ButtonStyle.green)
+    async def enable_verification(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not verification_data.get("word") or not verification_data.get("role_id"):
+            await interaction.response.send_message("Please set both verification word and role first.", ephemeral=True)
+            return
+
+        verification_data["enabled"] = True
+        save_json("verification.json", verification_data)
+        await interaction.response.send_message("✅ Verification system enabled!", ephemeral=True)
+
+    @discord.ui.button(label="❌ Disable Verification", style=discord.ButtonStyle.red)
+    async def disable_verification(self, interaction: discord.Interaction, button: discord.ui.Button):
+        verification_data["enabled"] = False
+        save_json("verification.json", verification_data)
+        await interaction.response.send_message("❌ Verification system disabled!", ephemeral=True)
+
+    async def update_display(self, interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="Verification System Settings",
+            color=BOT_CONFIG["default_embed_color"]
+        )
+
+        # Status
+        status = "🟢 Enabled" if verification_data.get("enabled", False) else "🔴 Disabled"
+        embed.add_field(name="Status", value=status, inline=True)
+
+        # Word
+        word = verification_data.get("word", "Not set")
+        embed.add_field(name="Verification Word", value=f"`{word}`" if word != "Not set" else word, inline=True)
+
+        # Role
+        role_id = verification_data.get("role_id")
+        if role_id:
+            role = interaction.guild.get_role(role_id)
+            role_value = role.mention if role else f"Invalid Role ({role_id})"
+        else:
+            role_value = "Not set"
+        embed.add_field(name="Verification Role", value=role_value, inline=True)
+
+        # Delete setting
+        delete_enabled = "🟢 Yes" if verification_data.get("delete_messages", False) else "🔴 No"
+        embed.add_field(name="Delete Messages", value=delete_enabled, inline=True)
+
+        # Channel restriction
+        channel_id = verification_data.get("channel_id")
+        if channel_id:
+            channel = bot.get_channel(channel_id)
+            channel_value = channel.mention if channel else f"Invalid Channel ({channel_id})"
+        else:
+            channel_value = "Any channel"
+        embed.add_field(name="Restricted Channel", value=channel_value, inline=True)
+
+        await interaction.response.edit_message(embed=embed, view=self)
+
+class VerificationWordModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Set Verification Word")
+
+        self.word = discord.ui.TextInput(
+            label="Verification Word",
+            placeholder="Enter the word users must say to get verified",
+            required=True,
+            max_length=50
+        )
+        self.add_item(self.word)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        verification_data["word"] = self.word.value.lower().strip()
+        save_json("verification.json", verification_data)
+        await interaction.response.send_message(f"✅ Verification word set to: `{self.word.value}`", ephemeral=True)
+
+class VerificationRoleModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Set Verification Role")
+
+        self.role_id = discord.ui.TextInput(
+            label="Role ID",
+            placeholder="Enter the role ID to give verified users",
+            required=True,
+            max_length=20
+        )
+        self.add_item(self.role_id)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            role_id = int(self.role_id.value)
+            role = interaction.guild.get_role(role_id)
+            
+            if not role:
+                await interaction.response.send_message("Role not found in this server.", ephemeral=True)
+                return
+
+            verification_data["role_id"] = role_id
+            save_json("verification.json", verification_data)
+            await interaction.response.send_message(f"✅ Verification role set to: {role.mention}", ephemeral=True)
+
+        except ValueError:
+            await interaction.response.send_message("Invalid role ID. Please enter numbers only.", ephemeral=True)
+
+@tree.command(name="verification", description="Set up verification system", guild=discord.Object(id=GUILD_ID))
+@guild_only()
+async def verification_setup(interaction: discord.Interaction):
+    if not has_staff_role(interaction):
+        await interaction.response.send_message("You don't have permission to configure verification.", ephemeral=True)
+        return
+
+    view = VerificationSetupView()
+    embed = discord.Embed(
+        title="Verification System Configuration",
+        description="Configure the verification system for your server:",
+        color=BOT_CONFIG["default_embed_color"]
+    )
+
+    # Show current status
+    status = "🟢 Enabled" if verification_data.get("enabled", False) else "🔴 Disabled"
+    embed.add_field(name="Current Status", value=status, inline=True)
+
+    word = verification_data.get("word", "Not set")
+    embed.add_field(name="Verification Word", value=f"`{word}`" if word != "Not set" else word, inline=True)
+
+    delete_enabled = "🟢 Yes" if verification_data.get("delete_messages", False) else "🔴 No"
+    embed.add_field(name="Delete Messages", value=delete_enabled, inline=True)
+
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+@tree.command(name="verification_channel", description="Set verification to work only in specific channel", guild=discord.Object(id=GUILD_ID))
+@guild_only()
+@app_commands.describe(channel="Channel for verification (leave empty to allow any channel)")
+async def verification_channel(interaction: discord.Interaction, channel: discord.TextChannel = None):
+    if not has_staff_role(interaction):
+        await interaction.response.send_message("You don't have permission to configure verification.", ephemeral=True)
+        return
+
+    if channel:
+        verification_data["channel_id"] = channel.id
+        save_json("verification.json", verification_data)
+        await interaction.response.send_message(f"✅ Verification restricted to {channel.mention}", ephemeral=True)
+    else:
+        verification_data.pop("channel_id", None)
+        save_json("verification.json", verification_data)
+        await interaction.response.send_message("✅ Verification can now work in any channel", ephemeral=True)
 
 # --------- Additional Commands and Features -----------
 
@@ -1891,12 +3015,141 @@ async def automated_backup():
         logger.error(f"Backup failed: {e}")
 
 @bot.event
+async def on_reaction_add(reaction, user):
+    if user.bot or reaction.message.guild.id != GUILD_ID:
+        return
+
+    message_id = str(reaction.message.id)
+    if message_id not in reaction_roles:
+        return
+
+    reaction_data = reaction_roles[message_id]
+    emoji_str = str(reaction.emoji)
+
+    # Handle role assignment
+    if emoji_str in reaction_data.get("roles", {}):
+        role_id = reaction_data["roles"][emoji_str]
+        role = reaction.message.guild.get_role(role_id)
+        if role and role not in user.roles:
+            try:
+                await user.add_roles(role)
+            except:
+                pass
+
+    # Handle rewards
+    if emoji_str in reaction_data.get("rewards", {}):
+        reward = reaction_data["rewards"][emoji_str]
+        user_id = str(user.id)
+        ensure_user_in_stats(user_id)
+        
+        member_stats[user_id]["xp"] += reward.get("xp", 0)
+        user_balances[user_id] = user_balances.get(user_id, 0) + reward.get("currency", 0)
+        save_all()
+
+@bot.event
+async def on_reaction_remove(reaction, user):
+    if user.bot or reaction.message.guild.id != GUILD_ID:
+        return
+
+    message_id = str(reaction.message.id)
+    if message_id not in reaction_roles:
+        return
+
+    reaction_data = reaction_roles[message_id]
+    emoji_str = str(reaction.emoji)
+
+    # Handle role removal
+    if emoji_str in reaction_data.get("roles", {}):
+        role_id = reaction_data["roles"][emoji_str]
+        role = reaction.message.guild.get_role(role_id)
+        if role and role in user.roles:
+            try:
+                await user.remove_roles(role)
+            except:
+                pass
+
+@bot.event
 async def on_message(message):
     if message.author.bot or message.guild is None or message.guild.id != GUILD_ID:
         return
 
-    # Track member stats
+    # Check verification system
+    if verification_data.get("enabled", False):
+        verification_word = verification_data.get("word", "").lower()
+        verification_role_id = verification_data.get("role_id")
+        verification_channel_id = verification_data.get("channel_id")
+        delete_messages = verification_data.get("delete_messages", False)
+        
+        # Check if verification should work in this channel
+        if not verification_channel_id or message.channel.id == verification_channel_id:
+            # Check if message contains verification word
+            if verification_word and verification_word in message.content.lower():
+                if verification_role_id:
+                    role = message.guild.get_role(verification_role_id)
+                    if role and role not in message.author.roles:
+                        try:
+                            await message.author.add_roles(role, reason="Verification system")
+                            
+                            # Send ephemeral-style response (delete after a few seconds)
+                            embed = discord.Embed(
+                                title="✅ Verification Successful",
+                                description=f"{message.author.mention}, you are now verified!",
+                                color=0x00FF00
+                            )
+                            verification_msg = await message.channel.send(embed=embed)
+                            
+                            # Delete both messages if setting is enabled
+                            if delete_messages:
+                                try:
+                                    await message.delete()
+                                    await verification_msg.delete(delay=3)  # Delete confirmation after 3 seconds
+                                except discord.NotFound:
+                                    pass  # Message already deleted
+                                except discord.Forbidden:
+                                    # If can't delete, just delete the confirmation after delay
+                                    await verification_msg.delete(delay=5)
+                            else:
+                                # Just delete confirmation message after delay
+                                await verification_msg.delete(delay=5)
+                                
+                        except discord.Forbidden:
+                            error_embed = discord.Embed(
+                                title="❌ Verification Failed",
+                                description="I don't have permission to assign roles.",
+                                color=0xFF0000
+                            )
+                            error_msg = await message.channel.send(embed=error_embed)
+                            await error_msg.delete(delay=5)
+
+    # Check AFK system
     uid = str(message.author.id)
+    afk_users = server_settings.get("afk_users", {})
+    if uid in afk_users:
+        del afk_users[uid]
+        server_settings["afk_users"] = afk_users
+        save_json("server_settings.json", server_settings)
+        
+        embed = discord.Embed(
+            title="Welcome Back!",
+            description=f"{message.author.mention}, you are no longer AFK.",
+            color=BOT_CONFIG["default_embed_color"]
+        )
+        await message.channel.send(embed=embed, delete_after=5)
+
+    # Check mentions for AFK users
+    for mention in message.mentions:
+        mention_id = str(mention.id)
+        if mention_id in afk_users:
+            afk_info = afk_users[mention_id]
+            embed = discord.Embed(
+                title="User is AFK",
+                description=f"{mention.display_name} is currently AFK: {afk_info['reason']}",
+                color=BOT_CONFIG["default_embed_color"]
+            )
+            embed.set_footer(text=f"AFK since: {datetime.fromtimestamp(afk_info['timestamp']).strftime('%Y-%m-%d %H:%M:%S')}")
+            await message.channel.send(embed=embed, delete_after=10)
+
+    # Track member stats
     ensure_user_in_stats(uid)
 
     # Check for level up
@@ -2066,6 +3319,19 @@ async def debug_info(interaction: discord.Interaction):
     embed.add_field(name="Total Auctions", value=str(len(auction_data)), inline=True)
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@tree.command(name="sync", description="Manually sync slash commands", guild=discord.Object(id=GUILD_ID))
+@guild_only()
+async def sync_commands(interaction: discord.Interaction):
+    if not has_admin_permissions(interaction):
+        await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
+        return
+
+    try:
+        synced = await tree.sync(guild=discord.Object(id=GUILD_ID))
+        await interaction.response.send_message(f"✅ Synced {len(synced)} command(s) to this server.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Failed to sync: {e}", ephemeral=True)
 
 @tree.command(name="cleanup_data", description="Clean up old and invalid data", guild=discord.Object(id=GUILD_ID))
 @guild_only()
