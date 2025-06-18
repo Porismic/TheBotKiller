@@ -794,6 +794,19 @@ class AuctionExtraInfoModal(discord.ui.Modal):
 
         await interaction.response.send_message("Advanced settings updated!", ephemeral=True)
 
+@tree.command(name="sync", description="Manually sync slash commands", guild=discord.Object(id=GUILD_ID))
+@guild_only()
+async def sync_commands(interaction: discord.Interaction):
+    if not has_admin_permissions(interaction):
+        await interaction.response.send_message("❌ You don't have permission to use this command.", ephemeral=True)
+        return
+
+    try:
+        synced = await tree.sync(guild=discord.Object(id=GUILD_ID))
+        await interaction.response.send_message(f"✅ Synced {len(synced)} command(s) to this server.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Failed to sync: {e}", ephemeral=True)
+
 @tree.command(name="auction", description="Create auctions with interactive setup", guild=discord.Object(id=GUILD_ID))
 @guild_only()
 @app_commands.describe(
